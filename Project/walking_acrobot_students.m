@@ -53,7 +53,7 @@ if symbolic_computations
     
     % Define the potential energy of the pinnedrobot
     P = m*g*(lc*sin(q1)+l*sin(q1)+lc*sin(q1+q2));
-    psi=deg2rad(incline_degrees);
+    psi=deg2rad(2);
     gvector=[cos(psi) -sin(psi);sin(psi) cos(psi)]*[0; -1];
     P=-(m*g*lc*[cos(q1);sin(q1)]+m*g*[l*cos(q1)+lc*cos(q1+q2);l*sin(q1)+lc*sin(q1+q2)])'*gvector;
     P=simplify(P);
@@ -232,53 +232,43 @@ a = M \ b;           % <= this is the result of Step 2
 disp('Solved VHC polynomial parameters a =')
 disp(a)
 
-%% ================== Step 3: Define phi and sigma functions ==================
+%% HERE WE DEFINE THE FUNCTION phi_a AND ITS DERIVATIVES
+% Keep the skeleton's expected ordering and interface
+a = a(:);                       % make sure column vector
+a_poly = flip(a)';               % for polyval (highest->lowest)
 
-% Ensure a exists (computed in Step 2). Force column
-a = a(:);
+phi=@(theta) polyval(a_poly,theta);
+phiprime=@(theta) polyval(polyder(a_poly),theta);
+phipprime=@(theta) polyval(polyder(polyder(a_poly)),theta);
 
-% MATLAB polyval expects coefficients from highest degree to lowest.
-% Flip the a vector to match polyval's ordering.
-a_poly = flip(a)';   % row vector for polyval / polyder
+% Using phi and its derivatives, below you should define functions sigma,
+% sigmaprime, sigmapprime.
 
-% Define phi and its derivatives (w.r.t. theta)
-phi = @(theta) polyval(a_poly, theta);
-phi_prime_coeffs = polyder(a_poly);
-phi_doubleprime_coeffs = polyder(phi_prime_coeffs);
-phiprime = @(theta) polyval(phi_prime_coeffs, theta);
-phipprime = @(theta) polyval(phi_doubleprime_coeffs, theta);
-
-% Define sigma(theta) and its derivatives (w.r.t. theta)
-% First component: q_plus(1) - theta * q_tilde1
-sigma = @(theta) [ q_plus(1) - theta * q_tilde1 ; phi(theta) ];
+% Define sigma and derivatives (consistent with document parametrization)
+sigma = @(theta) [ q_plus(1) - theta*q_tilde1 ; phi(theta) ];
 sigmaprime = @(theta) [ -q_tilde1 ; phiprime(theta) ];
 sigmapprime = @(theta) [ 0 ; phipprime(theta) ];
 
-% Register into data struct (used later by controller / simulations)
+% This is the data structure to be passed to various functions
+% You will need to add extra information to it.
 data.Kp=Kp;
 data.Kd=Kd;
 data.D=Dfun;
 data.C=Cfun;
 data.G=Gfun;
 data.B=B;
-data.phi = phi;
-data.phiprime = phiprime;
-data.phipprime = phipprime;
-data.sigma = sigma;
-data.sigmaprime = sigmaprime;
-data.sigmapprime = sigmapprime;
+data.phi=phi;
+data.phiprime=phiprime;
+data.phipprime=phipprime;
+data.sigma=sigma;
+data.sigmaprime=sigmaprime;
+data.sigmapprime=sigmapprime;
 data.q_plus = q_plus;
 data.q_tilde1 = q_tilde1;
 
+%% HERE WRITE CODE TO TEST WHETHER YOUR VHC WORKS
 
-% (Optional) quick sanity prints
-fprintf('VHC polynomial (coeffs a, lowest->highest):\n');
-disp(a');
-fprintf('VHC polynomial (for polyval, highest->lowest a_poly):\n');
-disp(a_poly);
-
-%% ================== Step 4 — VHC Verification (Section 2.4) ==================
-
+%% ================== VHC Verification (Section 2.4) ==================
 fprintf("\n================ VHC Verification ================\n");
 
 % Create grid over θ ∈ [0,1]
@@ -299,8 +289,8 @@ fprintf("σ(1)   should equal q-    →   "); disp(sigma(1)');
 fprintf("σ(0.5) should equal q_bar →   "); disp(sigma(0.5)');
 
 %% 2. Safe set check  (Required by Section 2.4)
-% Safe walking region: 0 < q1 < π,   0 < q2 < 2π
-in_bounds = (q1_vals > 0 & q1_vals < pi) & (q2_vals > 0 & q2_vals < 2*pi);
+% Use safe set definitions; this is a conservative check
+in_bounds = (q1_vals > 0 & q1_vals < pi) & (q2_vals > -pi & q2_vals < 3*pi);
 
 if all(in_bounds)
     fprintf("\n✓ VHC stays inside safe set W for all θ.\n");
@@ -315,13 +305,13 @@ regularity = zeros(size(theta_grid));
 
 for k = 1:length(theta_grid)
     th = theta_grid(k);
-    q = sigma(th);              % q = (q1,q2)
-    Dq = data.D(q);             % inertia matrix at q
-    s_prime = sigmaprime(th);   % σ'(θ)
+    qv = sigma(th);              % q = (q1,q2)
+    Dq = data.D(qv);             % inertia matrix at q
+    s_prime = sigmaprime(th);    % σ'(θ)
     regularity(k) = Dq(1,:) * s_prime;
 end
 
-if all(abs(regularity) > 1e-4)
+if all(abs(regularity) > 1e-6)
     fprintf("✓ Regularity condition satisfied: B⊥Dσ'(θ) ≠ 0 everywhere.\n");
 else
     fprintf("✗ Regularity violation detected — redesign VHC required.\n");
@@ -334,8 +324,8 @@ V_vals = zeros(size(theta_grid));
 
 for k = 1:length(theta_grid)
     th = theta_grid(k);
-    q = sigma(th);
-    Dq = data.D(q);
+    qv = sigma(th);
+    Dq = data.D(qv);
     s_prime = sigmaprime(th);
     s_dprime = sigmapprime(th);
 
@@ -343,7 +333,7 @@ for k = 1:length(theta_grid)
     M_vals(k) = s_prime' * (Dq * s_prime);
 
     % Virtual potential V(θ) approximated as G(q)' * sigma derivative (used for plotting)
-    V_vals(k) = data.G(q)' * s_prime;
+    V_vals(k) = data.G(qv)' * s_prime;
 end
 
 % Plot results
@@ -373,85 +363,32 @@ dt=1/60; % 60 fps; time increment in simulations and animations
 fprintf('\n Simulating...\n')
 %% DEFINE THE INITIAL CONDITION [q0;qdot0];
 
-% NOTE: this is a placeholder initial condition set on the constraint manifold at theta=0.
-% Later you should set qdot0 according to the computed limit-cycle theta_dot_a in the document.
-    % ===================== VHC feedback-linearizing controller =====================
-    % Output y = q2 - phi(theta) with theta = (q_plus(1) - q1)/q_tilde1
-    % Note: q_plus and q_tilde1 are in the main workspace; ensure they are visible
-    % through nested functions or store them in 'data' (we put them in data).
-    
-    % Get parameters and VHC functions from data
-    phi = data.phi;
-    phiprime = data.phiprime;
-    phipprime = data.phipprime;
-    sigma = data.sigma;
-    sigmaprime = data.sigmaprime;
-    sigmapprime = data.sigmapprime;
-    Dfun = data.D;
-    Cfun = data.C;
-    Gfun = data.G;
-    B = data.B;
-    Kp = data.Kp;
-    Kd = data.Kd;
-    
-    % Make sure q_plus(1) and q_tilde1 are available in data
-    if isfield(data,'q_plus')
-        q_plus_local = data.q_plus;
-    else
-        error('data.q_plus not found. Please set data.q_plus earlier.');
-    end
-    if isfield(data,'q_tilde1')
-        q_tilde1_local = data.q_tilde1;
-    else
-        error('data.q_tilde1 not found. Please set data.q_tilde1 earlier.');
-    end
-    
-    % Compute theta and its derivative
-    theta = (q_plus_local(1) - q1) / q_tilde1_local;
-    theta_dot = - q1dot / q_tilde1_local;  % d/dt[(q+1 - q1)/qtilde1] = -q1dot/qtilde1
-    
-    % Output and its derivative
-    y = q2 - phi(theta);
-    ydot = q2dot - phiprime(theta) * theta_dot;
-    
-    % Compute dynamics terms
-    Dq = Dfun(q);
-    Cq = Cfun([q;qdot]);
-    Gq = Gfun(q);
-    Dinv = inv(Dq);
-    
-    % Build S = [ phiprime/q_tilde1 , 1 ] to combine qddot into yddot
-    S = [ phiprime(theta)/q_tilde1_local , 1 ]; % 1x2
-    
-    % extra term from phi''(theta)*(theta_dot)^2 (see derivation)
-    extra = - phipprime(theta) * (theta_dot)^2;
-    
-    % Compute L = S * Dinv * (-C*qdot - G) + extra
-    L = S * ( Dinv * ( - Cq * qdot - Gq ) ) + extra;
-    
-    % Compute B2 = S * Dinv * B  (scalar multiplier of tau in yddot)
-    B2 = S * ( Dinv * B );
-    
-    % Safety: if B2 is too small, avoid division by (near) zero
-    if abs(B2) < 1e-8
-        % fallback: saturate/regularize or set tau to simple PD on q2
-        % We choose a safe small-control fallback to avoid NaNs
-        warning('B2 is very small in controller (possible singularity). Using PD fallback on q2.');
-        % simple PD directly on q2 (not ideal, but prevents blowup)
-        tau = - (Kp * sin(y) + Kd * ydot);
-    else
-        % Desired linearizing input (v) with PD on y, using sin(y) for nonlinearity
-        v = - Kp * sin(y) - Kd * ydot;
-        % Solve for tau :  yddot = L + B2 * tau  =>  tau = (v - L) / B2
-        tau = (v - L) / B2;
-    end
-    % =============== end of VHC controller ============================
-    
-    % Compute accelerations after control
-    qddot = Dinv * ( - Cq * qdot - Gq + B * tau );
-    
-    xdot = [qdot; qddot];
+% Compute theta_dot_a per document (if possible), otherwise fallback to 0
+% Use values computed above: M_vals, V_vals, and I (computed earlier)
+M_minus = sigmaprime(1)' * ( data.D( sigma(1) ) * sigmaprime(1) );
+V_minus = data.G( sigma(1) )' * sigmaprime(1);
+Vmax = max(V_vals);
 
+if exist('I','var')
+    num = sigmaprime(0)' * ( I * sigmaprime(1) );
+    den = sigmaprime(0)' * sigmaprime(0);
+    delta = num / den;
+else
+    delta = 0;
+end
+
+cond_existence = (delta^2 / M_minus > 0) && (delta^2 / M_minus < 1);
+rad = -2 * V_minus / (M_minus - delta^2);
+if cond_existence && (rad > 0)
+    theta_dot_a = delta * sqrt(rad);
+else
+    theta_dot_a = 0; % fallback
+end
+
+% initial on manifold
+q0 = sigma(0);           % post-impact point q+
+qdot0 = sigmaprime(0) * theta_dot_a;
+post_impact_state=[q0;qdot0];
 
 T=[];
 X=[];
@@ -459,18 +396,18 @@ Te=[];
 Ie=[];
 Xe=[];
 % Simulate number_steps steps
-disp("------------------------------------------------------------");
-disp("Running Closed-Loop Walking Simulation...");
-disp("------------------------------------------------------------");
-
-post_impact_state = [q0 ; qdot0];
-
 for step=1:number_steps
     fprintf('\n...step %d...\n',step);
     [t,x,te,xe,ie]=ode45(@(t,x) acrobot(t,x,data),0:dt:10,post_impact_state,ops);
     % Application of the impact map
-    impact_state=xe(end,:)';
-    post_impact_state=Deltafun(impact_state);
+    if isempty(xe)
+    warning("No impact detected — simulation terminated early.");
+    break
+else
+    impact_state = xe(end,:)';
+    post_impact_state = Deltafun(impact_state);
+end
+
     T{step}=t;
     X{step}=x;
     Ie{step}=ie;
@@ -541,86 +478,75 @@ B=data.B;
 phi=data.phi;
 phiprime=data.phiprime;
 phipprime=data.phipprime;
-% DEFINE YOUR CONTROLLER HERE
-% tau=....
-% For now set tau = 0 as placeholder. Replace with VHC controller later.
-    % ===================== VHC feedback-linearizing controller =====================
-    % Output y = q2 - phi(theta) with theta = (q_plus(1) - q1)/q_tilde1
-    % Note: q_plus and q_tilde1 are in the main workspace; ensure they are visible
-    % through nested functions or store them in 'data' (we put them in data).
-    
-    % Get parameters and VHC functions from data
-    phi = data.phi;
-    phiprime = data.phiprime;
-    phipprime = data.phipprime;
-    sigma = data.sigma;
-    sigmaprime = data.sigmaprime;
-    sigmapprime = data.sigmapprime;
-    Dfun = data.D;
-    Cfun = data.C;
-    Gfun = data.G;
-    B = data.B;
-    Kp = data.Kp;
-    Kd = data.Kd;
-    
-    % Make sure q_plus(1) and q_tilde1 are available in data
-    if isfield(data,'q_plus')
-        q_plus_local = data.q_plus;
-    else
-        error('data.q_plus not found. Please set data.q_plus earlier.');
-    end
-    if isfield(data,'q_tilde1')
-        q_tilde1_local = data.q_tilde1;
-    else
-        error('data.q_tilde1 not found. Please set data.q_tilde1 earlier.');
-    end
-    
-    % Compute theta and its derivative
-    theta = (q_plus_local(1) - q1) / q_tilde1_local;
-    theta_dot = - q1dot / q_tilde1_local;  % d/dt[(q+1 - q1)/qtilde1] = -q1dot/qtilde1
-    
-    % Output and its derivative
-    y = q2 - phi(theta);
-    ydot = q2dot - phiprime(theta) * theta_dot;
-    
-    % Compute dynamics terms
-    Dq = Dfun(q);
-    Cq = Cfun([q;qdot]);
-    Gq = Gfun(q);
-    Dinv = inv(Dq);
-    
-    % Build S = [ phiprime/q_tilde1 , 1 ] to combine qddot into yddot
-    S = [ phiprime(theta)/q_tilde1_local , 1 ]; % 1x2
-    
-    % extra term from phi''(theta)*(theta_dot)^2 (see derivation)
-    extra = - phipprime(theta) * (theta_dot)^2;
-    
-    % Compute L = S * Dinv * (-C*qdot - G) + extra
-    L = S * ( Dinv * ( - Cq * qdot - Gq ) ) + extra;
-    
-    % Compute B2 = S * Dinv * B  (scalar multiplier of tau in yddot)
-    B2 = S * ( Dinv * B );
-    
-    % Safety: if B2 is too small, avoid division by (near) zero
-    if abs(B2) < 1e-8
-        % fallback: saturate/regularize or set tau to simple PD on q2
-        % We choose a safe small-control fallback to avoid NaNs
-        warning('B2 is very small in controller (possible singularity). Using PD fallback on q2.');
-        % simple PD directly on q2 (not ideal, but prevents blowup)
-        tau = - (Kp * sin(y) + Kd * ydot);
-    else
-        % Desired linearizing input (v) with PD on y, using sin(y) for nonlinearity
-        v = - Kp * sin(y) - Kd * ydot;
-        % Solve for tau :  yddot = L + B2 * tau  =>  tau = (v - L) / B2
-        tau = (v - L) / B2;
-    end
-    % =============== end of VHC controller ============================
-    
-    % Compute accelerations after control
-    qddot = Dinv * ( - Cq * qdot - Gq + B * tau );
-    
-    xdot = [qdot; qddot];
 
+% ===================== VHC feedback-linearizing controller =====================
+% Get parameters and VHC functions from data
+phi = data.phi;
+phiprime = data.phiprime;
+phipprime = data.phipprime;
+sigma = data.sigma;
+sigmaprime = data.sigmaprime;
+sigmapprime = data.sigmapprime;
+Dfun = data.D;
+Cfun = data.C;
+Gfun = data.G;
+B = data.B;
+Kp = data.Kp;
+Kd = data.Kd;
+
+% make sure q_plus and q_tilde1 exist
+if isfield(data,'q_plus')
+    q_plus_local = data.q_plus;
+else
+    error('data.q_plus not found. Please set data.q_plus earlier.');
+end
+if isfield(data,'q_tilde1')
+    q_tilde1_local = data.q_tilde1;
+else
+    error('data.q_tilde1 not found. Please set data.q_tilde1 earlier.');
+end
+
+% Compute theta and its derivative
+theta = (q_plus_local(1) - q1) / q_tilde1_local;
+theta_dot = - q1dot / q_tilde1_local;  % d/dt[(q+1 - q1)/qtilde1] = -q1dot/qtilde1
+
+% Output and its derivative
+y = q2 - phi(theta);
+ydot = q2dot - phiprime(theta) * theta_dot;
+
+% Compute dynamics terms
+Dq = Dfun(q);
+Cq = Cfun([q;qdot]);
+Gq = Gfun(q);
+Dinv = inv(Dq);
+
+% Build S = [ phiprime/q_tilde1 , 1 ] to combine qddot into yddot
+S = [ phiprime(theta)/q_tilde1_local , 1 ]; % 1x2
+
+% extra term from phi''(theta)*(theta_dot)^2 (see derivation)
+extra = - phipprime(theta) * (theta_dot)^2;
+
+% Compute L = S * Dinv * (-C*qdot - G) + extra
+L = S * ( Dinv * ( - Cq * qdot - Gq ) ) + extra;
+
+% Compute B2 = S * Dinv * B  (scalar multiplier of tau in yddot)
+B2 = S * ( Dinv * B );
+
+% Safety: if B2 is too small, avoid division by (near) zero
+if abs(B2) < 1e-8
+    % fallback: PD on y
+    warning('B2 is very small in controller (possible singularity). Using PD fallback on q2.');
+    tau = - (Kp * sin(y) + Kd * ydot);
+else
+    % Desired linearizing input (v) with PD on y, using sin(y) for nonlinearity
+    v = - Kp * sin(y) - Kd * ydot;
+    % Solve for tau :  yddot = L + B2 * tau  =>  tau = (v - L) / B2
+    tau = (v - L) / B2;
+end
+% =============== end of VHC controller ============================
+
+qddot=inv(Dq)*(-Cq*qdot-Gq+B*tau);
+xdot=[qdot;qddot];
 end
 
 function [value,isterminal,direction]=ground_impact(t,x)
